@@ -143,6 +143,52 @@ class FeedbackTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             spell_reward(1.5, "en")
 
+    def test_dowhen_clears_feedback_and_removes_intervention_after_error(self):
+        for language in ("numeric", "en", "fr", "zh"):
+            with self.subTest(language=language):
+                with self.assertRaisesRegex(RuntimeError, "interrupted"), feedback_language(language, empty=True):
+                    for reward in (-100, 0, 3, 100, None):
+                        self.assertEqual(format_feedback(reward), "")
+                    self.assertEqual(spell_reward(3, language),
+                                     {"numeric": "3", "en": "three", "fr": "trois", "zh": "三"}[language])
+                    raise RuntimeError("interrupted")
+                self.assertEqual(format_feedback(3), "3")
+
+    def test_empty_reward_intervention_is_active_for_new_runs_and_resume(self):
+        for task in ("game24", "sciworld"):
+            with self.subTest(task=task), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                data = root / "24.csv"
+                data.write_text("1 2 3 4\n", encoding="utf-8")
+                calls = []
+
+                def run_task(task_name, settings, client, log):
+                    self.assertEqual(settings["reward_polarity"], "empty")
+                    self.assertEqual(format_feedback(3), "")
+                    calls.append(task_name)
+                    if len(calls) == 1:
+                        raise RuntimeError("interrupted")
+                    return {"rounds_completed": 1, "samples": 1}
+
+                with patch.object(events, "OUTPUT_ROOT", root / "outputs"), \
+                     patch("ablation.run.SurfClient"), \
+                     patch("ablation.run._run_task", side_effect=run_task), \
+                     patch("ablation.run.plot_run"), patch("builtins.print"):
+                    with patch("sys.argv", [
+                        "ablation.run", "--task", task, "--model", "gpt6luna",
+                        "--provider", "cliproxy", "--feedback", "numeric",
+                        "--reward-polarity", "empty", "--samples", "1", "--rounds", "1",
+                        "--game24-data", str(data),
+                    ]), self.assertRaisesRegex(RuntimeError, "interrupted"):
+                        ablation_run.main()
+                    self.assertEqual(format_feedback(3), "3")
+                    config_path, = (root / "outputs").rglob("config.json")
+                    self.assertIn("empty", config_path.parts)
+                    with patch("sys.argv", ["ablation.run", "--resume", str(config_path.parent)]):
+                        ablation_run.main()
+                self.assertEqual(calls, [task, task])
+                self.assertEqual(format_feedback(3), "3")
+
     def test_flipped_reward_scales_and_failed_evaluations(self):
         self.assertEqual([shown_reward("game24", score, "flipped", step=1)
                           for score in (0, 1, 3)], [3, 2, 0])
@@ -589,7 +635,7 @@ class FeedbackTests(unittest.TestCase):
 
         settings["reward_polarity"] = "empty"
         empty_client, empty_log = FakeClient(), FakeLog()
-        with feedback_language("en"):
+        with feedback_language("en", empty=True):
             empty_attempt = scienceworld_attempt(FakeEnv(), [attempt], config, settings,
                                                  empty_client, empty_log, sample_id=0,
                                                  round_idx=1, bootstrap=False, raw_icl=[])
@@ -597,9 +643,10 @@ class FeedbackTests(unittest.TestCase):
         self.assertIn("Observation: moved\nAvailable objects: cup", empty_client.prompts[1][-1]["content"])
         self.assertNotIn("reward", str(empty_client.prompts).lower())
         self.assertEqual((empty_attempt["reward"], empty_attempt["shown_reward"]), (3, None))
-        for _, fields in empty_log.records:
-            self.assertIsNone(fields["shown_reward"])
-            self.assertEqual(fields["display_reward"], "")
+        for event, fields in empty_log.records:
+            if event in ("eval_step", "attempt_end"):
+                self.assertIsNone(fields["shown_reward"])
+                self.assertEqual(fields["display_reward"], "")
 
     def test_scienceworld_legacy_method_aliases(self):
         class CurrentEnv:

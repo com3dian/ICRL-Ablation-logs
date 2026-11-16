@@ -1,0 +1,50 @@
+{
+  "task": "sciworld",
+  "model_alias": "gpt6luna",
+  "model": "gpt-6-luna",
+  "provider": "cliproxy",
+  "generation_options": {
+    "reasoning_effort": "none"
+  },
+  "judge_model": "gpt-6-luna",
+  "judge_generation_options": {
+    "reasoning_effort": "none"
+  },
+  "judge_max_tokens": 1024,
+  "judge_retry_budgets": [
+    2048,
+    4096
+  ],
+  "invalid_generation_policy": "zero_reward_no_judge",
+  "feedback": "numeric",
+  "reward_polarity": "random",
+  "random_reward_seed": 0,
+  "writing_seed_policy": "judged",
+  "game24_demo_policy": "unscored",
+  "rounds": 40,
+  "samples": 29,
+  "history": null,
+  "max_tokens": 1000,
+  "game24_data": "/home/WUR/lu087/Github/ICRL-Ablation-/ablation/data/24.csv",
+  "writing_data": "/home/WUR/lu087/Github/ICRL-Ablation-/ablation/data/data_100_random_text.txt",
+  "start_index": 900,
+  "bootstrap_attempts": 2,
+  "max_env_steps": 15,
+  "sciworld_tasks": null,
+  "variation_idx": 0,
+  "simplifications": "easy",
+  "sciworld_split": null,
+  "sciworld_dependencies": {
+    "scienceworld": "1.1.3",
+    "sentence-transformers": "5.7.0",
+    "transformers": "5.22.2",
+    "nltk": "3.10.4"
+  },
+  "sciworld_reward_policy": "score_delta_failure_minus_100_v2",
+  "sciworld_api400_backtracks": 3,
+  "sciworld_first_step_400_retry_delays": [
+    5,
+    15,
+    30
+  ]
+}
