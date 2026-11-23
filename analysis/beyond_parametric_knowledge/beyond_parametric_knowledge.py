@@ -21,10 +21,13 @@ from rouge_score import rouge_scorer
 
 embed_model = SentenceTransformer('all-MiniLM-L6-v2')
 
+from dotenv import load_dotenv
 from openai import OpenAI
 import os
 num_char = 200
 
+
+load_dotenv()
 
 api_eval = True  # Set to False to use vLLM instead of OpenAI
 sentence_transformer_eval = False
@@ -58,10 +61,11 @@ if not api_eval and not openrouter_eval:
               gpu_memory_utilization=0.95)
 elif api_eval:
     # OpenAI API initialization
-    client = OpenAI(api_key="REDACTED_API_KEY")
+    client = OpenAI()
 elif openrouter_eval:
-    # OpenRouter configuration (exactly following math_bench.py)
-    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "REDACTED_API_KEY")
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+    if not OPENROUTER_API_KEY:
+        raise RuntimeError("Set OPENROUTER_API_KEY to use OpenRouter.")
     OPENROUTER_MODEL = "microsoft/phi-4"
     openrouter_client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY)
 
