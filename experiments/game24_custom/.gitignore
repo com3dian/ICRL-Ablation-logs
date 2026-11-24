@@ -1,0 +1,4 @@
+outputs/*
+!outputs/plots/
+!outputs/dashboard/
+__pycache__/
