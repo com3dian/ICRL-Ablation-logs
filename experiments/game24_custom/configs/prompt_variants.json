@@ -1,0 +1,28 @@
+{
+  "_comment": "Prompt variants for game24_hidden_icrl.py --prompt_variant <name>. 'prompt_prefix' is put at the very beginning of the prompt (before the few-shot examples). 'extra_instruction' is appended right after the explore/exploit instruction in every round. 'official' = original prompt.",
+  "official": {
+    "prompt_prefix": "",
+    "extra_instruction": ""
+  },
+  "trust": {
+    "extra_instruction": "You can trust the reward."
+  },
+  "must_believe": {
+    "extra_instruction": "You have to believe the reward."
+  },
+  "reward_only": {
+    "prompt_prefix": "The reward is the only reliable signal."
+  },
+  "new_world": {
+    "prompt_prefix": "The rules of this world may be different from what you are used to."
+  },
+  "both": {
+    "prompt_prefix": "The rules of this world may be different from what you are used to. The reward is the only reliable signal."
+  },
+  "hint_base": {
+    "prompt_prefix": "The numbers in this world are not written in base 10. Keep writing every number, including intermediate results, in the same notation as the input."
+  },
+  "hint_base7": {
+    "prompt_prefix": "All numbers, including the target 24, are written in base 7. Keep writing every number, including intermediate results, in base 7."
+  }
+}
