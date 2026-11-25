@@ -2,13 +2,15 @@
 
 import copy
 import sys
+import time
 from pathlib import Path
 
 from openai import APIStatusError
 
 from .feedback import format_feedback
 from .reward_polarity import shown_reward
-from .sciworld_resume import API400_BACKTRACK_LIMIT, backtrack_attempt, resume_state
+from .sciworld_resume import (API400_FIRST_STEP_RETRY_DELAYS, api400_backtrack_limit,
+                             backtrack_attempt, resume_state)
 from .sciworld_checkpoint import Checkpointer
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -105,9 +107,29 @@ def _history_block(history: list[dict], limit: int | None, *, include_rewards: b
     return "\n".join(blocks)
 
 
+def _generate_action(messages, settings, client, log, *, sample_id, round_idx, step, saved):
+    """Retry a rejected first request before changing the simulator or prompt."""
+    retry_delays = settings.get("sciworld_first_step_400_retry_delays", API400_FIRST_STEP_RETRY_DELAYS)
+    while True:
+        try:
+            return client.generate(settings["model"], messages, temperature=1.0, max_tokens=settings["max_tokens"])
+        except APIStatusError as exc:
+            count = saved.get("api400_first_step_retries", 0)
+            if step != 1 or exc.status_code != 400 or exc.code != "invalid_prompt" or count >= len(retry_delays):
+                raise
+            delay = retry_delays[count]
+            log.emit("attempt_retry", sample_id=sample_id, round=round_idx, step=1,
+                     status_code=400, error_code=exc.code, retry_count=count + 1,
+                     retry_delay_seconds=delay, error_type=type(exc).__name__, error=str(exc))
+            saved["api400_first_step_retries"] = count + 1
+            print(f"ScienceWorld API 400: retrying step 1 in round {round_idx}, task {sample_id} "
+                  f"in {delay}s ({count + 1}/{len(retry_delays)})", flush=True)
+            time.sleep(delay)
+
+
 def _attempt(env, history, config, settings, client, log, *, sample_id: int, round_idx: int, bootstrap: bool, raw_icl, saved=None):
     active = copy.deepcopy(saved) if saved else {"steps": [], "generations": {}}
-    limit = settings.get("sciworld_api400_backtracks", API400_BACKTRACK_LIMIT)
+    limit = api400_backtrack_limit(settings)
     while True:
         try:
             return _attempt_once(env, history, config, settings, client, log,
@@ -131,7 +153,8 @@ def _attempt(env, history, config, settings, client, log, *, sample_id: int, rou
             log.emit("attempt_restart", sample_id=sample_id, round=round_idx, reason=str(exc))
             print(f"ScienceWorld replay differs: restarting unfinished round {round_idx}, task {sample_id}; completed attempts are retained", flush=True)
             active = {"steps": [], "generations": {},
-                      "api400_backtracks": active.get("api400_backtracks", 0)}
+                      "api400_backtracks": active.get("api400_backtracks", 0),
+                      "api400_first_step_retries": active.get("api400_first_step_retries", 0)}
 
 
 def _attempt_once(env, history, config, settings, client, log, *, sample_id: int, round_idx: int, bootstrap: bool, raw_icl, saved):
@@ -175,7 +198,8 @@ def _attempt_once(env, history, config, settings, client, log, *, sample_id: int
                 raise ReplayMismatchError(f"ScienceWorld replay prompt differs from saved generation at step {step_idx + 1}")
             output = generation["model_response"]
         else:
-            output = client.generate(settings["model"], messages, temperature=1.0, max_tokens=settings["max_tokens"])
+            output = _generate_action(messages, settings, client, log, sample_id=sample_id,
+                                      round_idx=round_idx, step=step_idx + 1, saved=saved)
             generation = dict(sample_id=sample_id, round=round_idx, step=step_idx + 1,
                               raw_prompt=raw_messages, model_response=output)
             log.emit("generation", **generation)
@@ -268,7 +292,8 @@ def run(settings: dict, client, log):
                 log.emit("attempt_restart", sample_id=sample_id, round=round_idx,
                          reason="Requested restart of the unfinished attempt")
                 prior = {"steps": [], "generations": {}, "end": None,
-                         "api400_backtracks": prior.get("api400_backtracks", 0)}
+                         "api400_backtracks": prior.get("api400_backtracks", 0),
+                         "api400_first_step_retries": prior.get("api400_first_step_retries", 0)}
             attempt = execute(prior)
             saved[key] = {"steps": attempt["steps"], "generations": {}, "end": {
                 "round": round_idx, "sample_id": sample_id, "reward": attempt["reward"],

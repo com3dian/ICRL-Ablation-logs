@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 
 from . import events, sciworld
 from . import run as runner
+from .client import SurfClient
 from .events import EventLog
 from .feedback import feedback_language
 from .run import _resume_settings, parse_args
@@ -79,6 +80,50 @@ class ScienceWorldTests(unittest.TestCase):
 
     def records(self, log):
         return [json.loads(line) for line in (log.path / "events.jsonl").read_text().splitlines()]
+
+    def test_empty_response_retries_current_step_without_duplicate_actions_or_rewards(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = self.settings("empty")
+            settings.update(samples=1, rounds=1, bootstrap_attempts=0)
+            components, created = self.components()
+            requests = []
+            responses = iter(("Action: look around", None, "Action: look around", "Action: look around"))
+
+            def create(**kwargs):
+                requests.append(copy.deepcopy(kwargs))
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content=next(responses), model_extra={}),
+                                             finish_reason="stop")], usage=None)
+
+            client = SurfClient.__new__(SurfClient)
+            client.provider = "cliproxy"
+            client.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+            with patch.object(events, "OUTPUT_ROOT", Path(tmp)), \
+                 patch.object(sciworld, "_original_components", return_value=components), \
+                 patch("ablation.client.time.sleep") as sleep, \
+                 self.assertLogs("ablation.client", level="WARNING"), feedback_language("numeric", empty=True):
+                log = EventLog("sciworld", "fake", "numeric", settings)
+                try:
+                    summary = sciworld.run(settings, client, log)
+                    records = self.records(log)
+                    resume_state(log.path / "events.jsonl", settings)
+                finally:
+                    log.close()
+            self.assertEqual(summary, {"rounds_completed": 1, "samples": 1})
+            self.assertEqual(len(requests), 4)
+            self.assertEqual(requests[1], requests[2])
+            sleep.assert_called_once_with(5)
+            self.assertEqual(created[0].moves, 3)
+            self.assertTrue(created[0].closed)
+            generations = [e for e in records if e["event"] == "generation"]
+            evaluations = [e for e in records if e["event"] == "eval_step"]
+            self.assertEqual([e["step"] for e in generations], [1, 2, 3])
+            self.assertTrue(all(e["model_response"] == "Action: look around" for e in generations))
+            self.assertEqual([e["reward"] for e in evaluations], [30, 0, -130])
+            self.assertTrue(all(e["shown_reward"] is None for e in evaluations))
+            ends = [e for e in records if e["event"] == "attempt_end"]
+            self.assertEqual(len(ends), 1)
+            self.assertEqual(ends[0]["reward"], -100)
 
     def test_resume_matches_uninterrupted_run_at_each_persisted_boundary(self):
         for polarity in ("normal", "flipped", "random", "empty"):

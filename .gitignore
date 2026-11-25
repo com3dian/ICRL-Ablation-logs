@@ -49,6 +49,7 @@ ENV/
 *.csv
 *.dat
 *.out
+slurm-sciworld-luna-*.err
 *.pid
 *.gz
 *.jar

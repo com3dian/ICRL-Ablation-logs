@@ -88,7 +88,7 @@ python -m ablation.run --provider cliproxy --task game24 --model gpt6luna --feed
 
 This is a smoke test, not a substitute for the SURF comparison: a different candidate and judge change the experiment. Keep Cliproxy results separate when comparing conditions. OpenAI's published API prices may differ from Cliproxy's charges.
 
-Use `--samples`, `--rounds`, `--history`, and `--max-env-steps` to control scope. `--judge-model` changes the fixed judge; keep it constant across conditions. Game24 and Creative Writing judge calls use a separate `--judge-max-tokens` budget (default 1024, including reasoning tokens). If a judge consumes its whole budget without a visible answer, it retries with 2× then 4× that budget and logs each attempt's token usage as `judge_call`. Transient HTTP 408 timeouts are also retried. It still fails the run if all attempts are empty; a judge outage never becomes a zero reward. The default GPT-OSS judge uses low reasoning effort; this does not change GPT-OSS candidate generation. A malformed Game24 `<answer>` is scored as four zero steps with `invalid_generation` status, without calling the judge. These policies and judge settings are recorded in `config.json` and should be held constant across conditions. `--feedback en`, `fr`, or `zh` selects just one text format; `all` also includes the numeric baseline. `--keep-going` lets other conditions proceed if a model is unavailable and returns a failure status at the end. The runner writes append-only per-step evaluations, each attempt's numeric and displayed reward, prompts, responses, configuration, and final summary under `ablation/outputs/<task>/<model>/<feedback>/<run-id>/`. The run outputs are versioned in Git. Commit and push new or updated runs to store them on GitHub; generated Matplotlib font caches remain ignored. A completed condition also gets `reward.png` (mean numeric reward by round); regenerate a plot from a partial run with `python -m ablation.plot /absolute/path/to/run-directory`.
+Use `--samples`, `--rounds`, `--history`, and `--max-env-steps` to control scope. `--judge-model` changes the fixed judge; keep it constant across conditions. Game24 and Creative Writing judge calls use a separate `--judge-max-tokens` budget (default 1024, including reasoning tokens). If a judge consumes its whole budget without a visible answer, it retries with 2× then 4× that budget and logs each attempt's token usage as `judge_call`. Candidate and judge calls also retry empty or whitespace-only answers at the same token budget after 5, 15, and 30 seconds, using the same retry limit as transient HTTP errors (including 408 timeouts). Each empty-response retry is logged. ScienceWorld retries the current step before applying an action, so empty responses do not consume environment steps or add rewards. Persistent empty responses still fail the run with saved progress intact; resume uses this retry logic automatically. A judge outage never becomes a zero reward. The default GPT-OSS judge uses low reasoning effort; this does not change GPT-OSS candidate generation. A malformed Game24 `<answer>` is scored as four zero steps with `invalid_generation` status, without calling the judge. These policies and judge settings are recorded in `config.json` and should be held constant across conditions. `--feedback en`, `fr`, or `zh` selects just one text format; `all` also includes the numeric baseline. `--keep-going` lets other conditions proceed if a model is unavailable and returns a failure status at the end. The runner writes append-only per-step evaluations, each attempt's numeric and displayed reward, prompts, responses, configuration, and final summary under `ablation/outputs/<task>/<model>/<feedback>/<run-id>/`. The run outputs are versioned in Git. Commit and push new or updated runs to store them on GitHub; generated Matplotlib font caches remain ignored. A completed condition also gets `reward.png` (mean numeric reward by round); regenerate a plot from a partial run with `python -m ablation.plot /absolute/path/to/run-directory`.
 
 ### Flipped-reward condition
 
@@ -108,7 +108,28 @@ For Creative Writing, add `--writing-seed-policy judged` to the matched normal r
 
 To run all three tasks with one Cliproxy model and numeric feedback, use `--task all --model gpt6luna --provider cliproxy --feedback numeric --reward-polarity flipped`. For its new matched normal run, use the same command without `--reward-polarity flipped` and add `--game24-demo-policy unscored --writing-seed-policy judged`. You can instead select one task at a time; the runner saves each condition separately.
 
-The judge or environment still produces the **true** `reward` used in plots and the dashboard. New events also store numeric `shown_reward` and its language-rendered `display_reward`, which are what the model sees. Game24 reverses valid intermediate scores with `3 - reward` and the final score with `10 - reward`; its shown attempt total is the sum of the four shown step scores. Creative Writing uses `11 - reward` for valid 1–10 scores. ScienceWorld uses `-reward` for each environment score change and for the attempt total. Malformed Game24 generations and invalid judge responses retain zero feedback and their failure status. The flipped output directory adds `/flipped/` between the feedback name and run ID, and Game24 resume reads the saved polarity and policies. Do not resume a normal run to create a flipped condition.
+The judge or environment still produces the **true** `reward` used in plots and the dashboard. New events also store numeric `shown_reward` and its language-rendered `display_reward`, which are what the model sees. Game24 reverses valid intermediate scores with `3 - reward` and the final score with `10 - reward`; its shown attempt total is the sum of the four shown step scores. Creative Writing uses `11 - reward` for valid 1–10 scores. ScienceWorld uses `-reward` for each environment score change and for the attempt total. Malformed Game24 generations and invalid judge responses retain zero feedback and their failure status. The flipped output directory adds `/flipped/` between the feedback name and run ID, and both Game24 and ScienceWorld resume read the saved polarity and policies. Do not resume a normal run to create a flipped condition.
+
+For the ScienceWorld GPT-6 Luna flipped-reward experiment on Slurm, submit from the repository root:
+
+```bash
+sbatch jobs/sciworld_luna_flipped.sbatch
+```
+
+This matches the normal and empty-reward jobs: Cliproxy, numeric feedback, 29 tasks, 40 rounds, two bootstrap attempts per task, 15 environment steps, 1000 output tokens, variation 0, `easy` simplifications, and full attempt history. It requests four CPUs, 64 GB RAM, and three days. Start a fresh run so that bootstrap attempts and all subsequent rounds receive flipped numeric feedback. The model's task instructions, actions, and observations, including textual success/failure notices, retain their normal meanings.
+
+At each ScienceWorld step, the displayed reward is `-r`, where `r` is the true environment score change, including the corrected failure penalty. For example, `+20` becomes `-20`, `0` stays `0`, and `-100` becomes `+100`. If an attempt earns 30 points and then fails, the final true step reward is `-130`; its displayed value is `+130`, making the attempt's true total `-100` and displayed total `+100`. The displayed attempt total is the sum of displayed step rewards, so it always equals the negative true total. Both immediate feedback and prior-attempt history use these flipped values. True rewards remain in the event log, plots, and dashboard.
+
+The job checks sign inversion and numeric formatting before API calls. Logs use `slurm-sciworld-luna-flipped-<job-id>.out` and `.err`; results go to `ablation/outputs/sciworld/gpt6luna/numeric/flipped/<run-id>/`. Compare the true reward curves, mean true reward over the final five rounds, and fraction of attempts scoring 100 against the normal and empty conditions. Repeated runs are needed to assess variability.
+
+For a small API connectivity check, or to resume an interrupted flipped-reward run:
+
+```bash
+SAMPLES=1 ROUNDS=2 BOOTSTRAP_ATTEMPTS=0 MAX_ENV_STEPS=3 sbatch jobs/sciworld_luna_flipped.sbatch
+RESUME_DIR=ablation/outputs/sciworld/gpt6luna/numeric/flipped/<run-id> sbatch jobs/sciworld_luna_flipped.sbatch
+```
+
+The resume check rejects other reward conditions; `RESUME_MODE` defaults to `auto`, and the saved configuration takes precedence over size overrides.
 
 Math uses its separate runner. From `experiments/math`, in the environment used for that experiment, run `python math_bench.py flip_rewards=true postfix=flipped_reward` for deterministic `1 - true_reward` feedback. Its saved attempts keep the original score in `extra_fields.real_reward`; the `reward` field drives the model's history and sorting. Use `flip_rewards=false` for a new matched control. An invalid Math reward-model response now fails the run instead of being converted into zero and accidentally appearing as a perfect flipped score.
 
@@ -123,6 +144,21 @@ python -m ablation.run --provider cliproxy --task game24 --model gpt6luna --feed
 Remove `--samples 1 --rounds 2` for the full experiment. Two rounds let the model receive the first attempt's random feedback. This condition still calls the judge to record true scores for evaluation; only model-visible rewards change. Game24 samples uniformly from `{0, 1, 3}` per intermediate step and `{0, 10}` for the final answer. Creative Writing samples uniformly from integers 1–10. ScienceWorld samples uniformly from integers −100 through 100 per environment step; this is a uniform noise control, not a match to the observed reward distribution. Attempt totals sum the shown step rewards. Failed evaluations retain the existing zero-feedback handling.
 
 The seed (default 0) is saved as `random_reward_seed` in `config.json`. Each draw is keyed by seed, task, sample, round, and step, so feedback is reproducible across languages and Game24 resumes. Random conditions use the same `unscored` Game24 examples and `judged` writing seed policy as flipped conditions; use those policies for matched normal runs too. Outputs are stored under `<task>/<model>/<feedback>/random/<run-id>/` and labeled `random` in the dashboard, whose scores remain true rewards. Resume a random Game24 run using its saved output directory, without adding polarity or seed overrides.
+
+For the full ScienceWorld GPT-6 Luna random-reward experiment on Slurm, submit from the repository root:
+
+```bash
+sbatch jobs/sciworld_luna_random.sbatch
+```
+
+This matches the normal, empty, and flipped jobs: Cliproxy, numeric feedback, 29 tasks, 40 rounds, two bootstrap attempts per task, 15 environment steps, 1000 output tokens, variation 0, `easy` simplifications, and full attempt history. It requests four CPUs, 64 GB RAM, and three days. Model-visible rewards are independent uniform integers from −100 through 100 per step; evaluation retains true environment rewards. The random feedback seed defaults to 0; use `RANDOM_REWARD_SEED=1 sbatch jobs/sciworld_luna_random.sbatch` for another seed. Logs use `slurm-sciworld-luna-random-<job-id>.out` and `.err`; results go to `ablation/outputs/sciworld/gpt6luna/numeric/random/<run-id>/`.
+
+For a small API connectivity check, or to resume with the saved configuration and seed:
+
+```bash
+SAMPLES=1 ROUNDS=2 BOOTSTRAP_ATTEMPTS=0 MAX_ENV_STEPS=3 sbatch jobs/sciworld_luna_random.sbatch
+RESUME_DIR=ablation/outputs/sciworld/gpt6luna/numeric/random/<run-id> sbatch jobs/sciworld_luna_random.sbatch
+```
 
 ### Empty-reward condition
 
@@ -176,7 +212,9 @@ If a process dies while writing its last event, resume archives and removes only
 
 On an API HTTP 400 during a ScienceWorld attempt, the runner backs up one completed action and generates a replacement. For example, if the request for step 3 is rejected, it discards step 2, resets the simulator, replays and verifies step 1 without a model call, and requests a fresh step 2. The removed action, observation, and reward are excluded from the active prompt and attempt total. Original records remain in the audit log with an `attempt_backtrack` marker; checkpoint and event-log recovery honor that marker without duplicating rewards. Completed attempts and rounds are retained. If replay differs, the existing resume mode controls whether to restart the unfinished attempt or stop.
 
-There are at most three API 400 backtracks per attempt, including across process resumes and attempt restarts. New configurations record this limit as `sciworld_api400_backtracks`; older runs use the same default on resume. A rejection on the first action has no preceding step to undo and stops the run. Persistent rejection after the limit also stops with saved progress intact. Other API failures retain their existing handling. This recovery can try a different action but cannot guarantee that a rejected prompt will succeed. To run the offline checks, use `python -m unittest ablation.test_sciworld_backtrack ablation.test_sciworld_checkpoint ablation.test_sciworld ablation.test_ablation`.
+The default is five API 400 backtracks per attempt, including across process resumes and attempt restarts. New configurations record this limit as `sciworld_api400_backtracks`. Saved runs with a lower allowance automatically use five on resume, without rewriting their original configuration; the `run_resume` event records the effective limit. Backtracks already used still count, so an interrupted attempt that used three has two more available. Recovery and log validation use the same effective limit.
+
+If the first action receives HTTP 400 with code `invalid_prompt`, there is no preceding action to undo. The runner instead retries the same prompt up to three times, after 5, 15, and 30 seconds (four requests total). Each retry is recorded as `attempt_retry`; rejected requests do not apply actions or add rewards. The retry count survives checkpoints, process resumes, and attempt restarts, and completed attempts and rounds are retained. This applies to bootstrap and regular attempts under every reward condition. New configurations save the delays as `sciworld_first_step_400_retry_delays`; older runs use the same defaults automatically on resume, without changing their saved configuration. Persistent rejection stops with progress intact; other first-action HTTP 400 errors still fail immediately. Other API failures retain their existing handling. Retries cannot guarantee that a rejected prompt will succeed. To run the offline checks, use `python -m unittest ablation.test_sciworld_backtrack ablation.test_sciworld_checkpoint ablation.test_sciworld ablation.test_ablation`.
 
 For example, continue the interrupted November 13 SciWorld run from the repository root:
 
@@ -287,6 +325,22 @@ SAMPLES=1 ROUNDS=1 BOOTSTRAP_ATTEMPTS=0 MAX_ENV_STEPS=3 sbatch jobs/sciworld_lun
 ```
 
 Resume an interrupted normal Luna run with `RESUME_DIR=ablation/outputs/sciworld/gpt6luna/numeric/<run-id> sbatch jobs/sciworld_luna_normal.sbatch`. Resume uses the saved run configuration. `SAMPLES`, `ROUNDS`, `BOOTSTRAP_ATTEMPTS`, `MAX_ENV_STEPS`, and `MAX_TOKENS` customize new jobs; `REPO_DIR` and `ENV_PREFIX` override the repository and environment locations. Compute nodes must be able to reach the Cliproxy endpoint.
+
+#### French reward feedback on Slurm
+
+Submit from the repository root:
+
+```bash
+sbatch jobs/sciworld_luna_french.sbatch
+```
+
+The job shares the GPT-6 Luna numeric baseline settings, including 29 tasks, 40 rounds, two bootstrap attempts per task, a 15-step limit, variation 0, `easy` simplifications, and full attempt history. Reward values in model prompts are spelled out in French. Evaluation uses the simulator's integer scores. Results go to `ablation/outputs/sciworld/gpt6luna/fr/<run-id>/`, with Slurm logs named `slurm-sciworld-luna-french-<job-id>.out` and `.err`.
+
+Resume an interrupted French run with its saved configuration:
+
+```bash
+RESUME_DIR=ablation/outputs/sciworld/gpt6luna/fr/<run-id> sbatch jobs/sciworld_luna_french.sbatch
+```
 
 ### Running the experiments
 

@@ -43,23 +43,26 @@ export HF_HUB_OFFLINE=1
 export MPLCONFIGDIR="${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/icrl-matplotlib-${SLURM_JOB_ID:-local}"
 mkdir -p "$MPLCONFIGDIR"
 
+# The French job uses the same launcher and changes only the feedback format.
+feedback="${SCIWORLD_FEEDBACK:-numeric}"
 if [[ -n "${RESUME_DIR:-}" ]]; then
     # Check that this job cannot accidentally resume another experiment condition.
-    "$ENV_PREFIX/bin/python" - "$RESUME_DIR" <<'PY'
+    "$ENV_PREFIX/bin/python" - "$RESUME_DIR" "$feedback" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 config = json.loads((Path(sys.argv[1]) / "config.json").read_text())
-expected = {"task": "sciworld", "provider": "cliproxy", "model_alias": "gpt6luna", "feedback": "numeric"}
+feedback = sys.argv[2]
+expected = {"task": "sciworld", "provider": "cliproxy", "model_alias": "gpt6luna", "feedback": feedback}
 if any(config.get(key) != value for key, value in expected.items()) or config.get("reward_polarity", "normal") != "normal":
-    raise SystemExit("RESUME_DIR must be a normal numeric ScienceWorld gpt6luna Cliproxy run")
+    raise SystemExit(f"RESUME_DIR must be a normal ScienceWorld gpt6luna Cliproxy run with feedback={feedback}")
 PY
     run_args=(--resume "$RESUME_DIR" --sciworld-resume-mode "${RESUME_MODE:-auto}")
 else
     run_args=(
         --task sciworld --provider cliproxy --model gpt6luna
-        --feedback numeric --reward-polarity normal
+        --feedback "$feedback" --reward-polarity normal
         --samples "${SAMPLES:-29}" --rounds "${ROUNDS:-40}"
         --bootstrap-attempts "${BOOTSTRAP_ATTEMPTS:-2}"
         --max-env-steps "${MAX_ENV_STEPS:-15}"
@@ -67,13 +70,21 @@ else
     )
 fi
 
-# Check local prerequisites without printing credentials or calling the API.
-"$ENV_PREFIX/bin/python" - <<'PY'
+# Check local prerequisites and feedback rendering before making API calls.
+"$ENV_PREFIX/bin/python" - "$feedback" <<'PY'
 import os
+import sys
 from pathlib import Path
 
 import nltk
 from dotenv import load_dotenv
+
+from ablation.feedback import feedback_language, format_feedback, spell_reward
+
+feedback = sys.argv[1]
+with feedback_language(feedback):
+    if any(format_feedback(score) != spell_reward(score, feedback) for score in (-100, 0, 100)):
+        raise SystemExit(f"Reward rendering check failed for feedback={feedback}")
 
 load_dotenv(Path.cwd() / ".env", override=False)
 if not os.getenv("CLIPROXY_API_KEY"):

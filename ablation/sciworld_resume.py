@@ -6,7 +6,13 @@ from .reward_polarity import shown_reward
 from .sciworld_checkpoint import compact_attempt, load_checkpoint
 
 REWARD_POLICY = "score_delta_failure_minus_100_v2"
-API400_BACKTRACK_LIMIT = 3
+API400_BACKTRACK_LIMIT = 5
+API400_FIRST_STEP_RETRY_DELAYS = (5, 15, 30)
+
+
+def api400_backtrack_limit(settings):
+    """Upgrade older recovery allowances without rewriting saved configurations."""
+    return max(API400_BACKTRACK_LIMIT, settings.get("sciworld_api400_backtracks", API400_BACKTRACK_LIMIT))
 
 
 def backtrack_attempt(attempt, step):
@@ -50,7 +56,8 @@ def _read_events(stream, settings, attempts, rounds, manifest, last_order):
                 raise ValueError("ScienceWorld restart/backtrack must refer to the current incomplete attempt")
             if kind == "attempt_restart":
                 attempts[key] = {"steps": [], "generations": {}, "end": None,
-                                 "api400_backtracks": prior.get("api400_backtracks", 0)}
+                                 "api400_backtracks": prior.get("api400_backtracks", 0),
+                                 "api400_first_step_retries": prior.get("api400_first_step_retries", 0)}
             else:
                 step = event.get("step")
                 count = prior.get("api400_backtracks", 0) + 1
@@ -58,11 +65,11 @@ def _read_events(stream, settings, attempts, rounds, manifest, last_order):
                         or prior["steps"][-1]["finished"]
                         or event.get("failed_step") != step + 1
                         or event.get("status_code") != 400 or event.get("backtrack_count") != count
-                        or count > settings.get("sciworld_api400_backtracks", API400_BACKTRACK_LIMIT)):
+                        or count > api400_backtrack_limit(settings)):
                     raise ValueError("Invalid ScienceWorld API 400 backtrack")
                 backtrack_attempt(prior, step)
                 prior["api400_backtracks"] = count
-        if kind not in ("generation", "eval_step", "attempt_end"):
+        if kind not in ("attempt_retry", "generation", "eval_step", "attempt_end"):
             continue
         round_idx, sample = event["round"], event["sample_id"]
         if not (-settings["bootstrap_attempts"] <= round_idx < settings["rounds"] and
@@ -84,7 +91,16 @@ def _read_events(stream, settings, attempts, rounds, manifest, last_order):
         if steps and steps[-1]["finished"]:
             if kind != "attempt_end":
                 raise ValueError("ScienceWorld checkpoint continues after termination")
-        if kind == "generation":
+        if kind == "attempt_retry":
+            count = attempt.get("api400_first_step_retries", 0) + 1
+            delays = settings.get("sciworld_first_step_400_retry_delays", API400_FIRST_STEP_RETRY_DELAYS)
+            if (steps or attempt["generations"] or event.get("step") != 1
+                    or event.get("status_code") != 400 or event.get("error_code") != "invalid_prompt"
+                    or event.get("retry_count") != count or count > len(delays)
+                    or event.get("retry_delay_seconds") != delays[count - 1]):
+                raise ValueError("Invalid ScienceWorld first-step API 400 retry")
+            attempt["api400_first_step_retries"] = count
+        elif kind == "generation":
             step = event["step"]
             if step != len(steps) + 1 or step in attempt["generations"] or step > settings["max_env_steps"]:
                 raise ValueError("Duplicate or non-contiguous ScienceWorld generation")

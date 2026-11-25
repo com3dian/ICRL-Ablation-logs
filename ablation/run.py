@@ -12,7 +12,8 @@ from .events import EventLog
 from .feedback import LANGUAGES, feedback_language
 from .plot import plot_run
 from .reward_polarity import POLARITIES
-from .sciworld_resume import API400_BACKTRACK_LIMIT, REWARD_POLICY
+from .sciworld_resume import (API400_BACKTRACK_LIMIT, API400_FIRST_STEP_RETRY_DELAYS,
+                             REWARD_POLICY, api400_backtrack_limit)
 
 TASKS = ("game24", "creative_writing", "sciworld")
 DEFAULT_SAMPLES = {"game24": 100, "creative_writing": 100, "sciworld": 29}
@@ -172,7 +173,9 @@ def main():
                 else:
                     log.emit("run_resume", sciworld_reward_policy=REWARD_POLICY,
                              sciworld_resume_mode=settings["_sciworld_resume_mode"],
-                             sciworld_api400_backtracks=settings.get("sciworld_api400_backtracks", API400_BACKTRACK_LIMIT))
+                             sciworld_api400_backtracks=api400_backtrack_limit(settings),
+                             sciworld_first_step_400_retry_delays=settings.get(
+                                 "sciworld_first_step_400_retry_delays", API400_FIRST_STEP_RETRY_DELAYS))
                 summary = _run_task(settings["task"], settings, client, log)
                 log.finish(summary)
             print(f"Resumed and finished: {run_dir} (plot: {plot_run(run_dir)})", flush=True)
@@ -221,7 +224,8 @@ def main():
                                     sciworld_dependencies={p: version(p) for p in
                                                           ("scienceworld", "sentence-transformers", "transformers", "nltk")},
                                     sciworld_reward_policy=REWARD_POLICY,
-                                    sciworld_api400_backtracks=API400_BACKTRACK_LIMIT)
+                                    sciworld_api400_backtracks=API400_BACKTRACK_LIMIT,
+                                    sciworld_first_step_400_retry_delays=list(API400_FIRST_STEP_RETRY_DELAYS))
                     if args.sciworld_tasks:
                         settings["samples"] = len(args.sciworld_tasks)
                 log = EventLog(task, model_alias, feedback, settings)

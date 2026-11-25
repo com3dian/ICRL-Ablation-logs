@@ -6,14 +6,14 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import httpx
 from openai import APIStatusError
 
 from . import dashboard, events
 from . import run as ablation_run
-from .client import MODELS, SurfClient, generation_options, judge_options
+from .client import EmptyResponseError, MODELS, SurfClient, generation_options, judge_options
 from .creative_writing import build_prompt as writing_prompt, evaluate as evaluate_writing
 from .events import EventLog
 from .feedback import feedback_language, format_feedback, spell_reward
@@ -64,9 +64,67 @@ class FeedbackTests(unittest.TestCase):
 
         client = SurfClient.__new__(SurfClient)
         client.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
-        with self.assertRaisesRegex(RuntimeError, "finish_reason=length, completion_tokens=64, reasoning_present=True") as error:
+        with patch("ablation.client.time.sleep"), self.assertLogs("ablation.client", level="WARNING"), \
+             self.assertRaisesRegex(EmptyResponseError, "finish_reason=length, completion_tokens=64, reasoning_present=True") as error:
             client.generate(MODELS["qwen35b"], "Reply READY.", temperature=0, max_tokens=64)
         self.assertNotIn("private", str(error.exception))
+
+    def test_empty_responses_retry_same_request_and_report_each_response(self):
+        for provider in ("surf", "cliproxy"):
+            for empty in (None, "", " \t\n"):
+                for finish_reason in ("stop", "length"):
+                    with self.subTest(provider=provider, empty=empty, finish_reason=finish_reason):
+                        requests, reports = [], []
+
+                        def create(**kwargs):
+                            requests.append(kwargs)
+                            content = empty if len(requests) == 1 else "READY"
+                            return SimpleNamespace(
+                                choices=[SimpleNamespace(
+                                    message=SimpleNamespace(content=content, model_extra={}),
+                                    finish_reason=finish_reason)],
+                                usage=SimpleNamespace(completion_tokens=4),
+                            )
+
+                        client = SurfClient.__new__(SurfClient)
+                        client.provider = provider
+                        client.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+                        with patch("ablation.client.time.sleep") as sleep, \
+                             self.assertLogs("ablation.client", level="WARNING"):
+                            answer = client.generate(MODELS["gpt6luna"], "Reply READY", temperature=1,
+                                                     max_tokens=1000, on_response=reports.append)
+                        self.assertEqual(answer, "READY")
+                        self.assertEqual(len(requests), 2)
+                        self.assertEqual(requests[0], requests[1])
+                        limit_name = "max_completion_tokens" if provider == "cliproxy" else "max_tokens"
+                        self.assertEqual(requests[1][limit_name], 1000)
+                        self.assertEqual([report["content_present"] for report in reports], [False, True])
+                        sleep.assert_called_once_with(5)
+
+    def test_persistent_empty_responses_stop_after_three_retries(self):
+        requests, reports = [], []
+
+        def create(**kwargs):
+            requests.append(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=None, model_extra={}),
+                                         finish_reason="stop")],
+                usage=SimpleNamespace(completion_tokens=4),
+            )
+
+        client = SurfClient.__new__(SurfClient)
+        client.provider = "cliproxy"
+        client.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        with patch("ablation.client.time.sleep") as sleep, \
+             self.assertLogs("ablation.client", level="WARNING") as logs, \
+             self.assertRaisesRegex(EmptyResponseError, "finish_reason=stop, completion_tokens=4"):
+            client.generate(MODELS["gpt6luna"], "Reply READY", temperature=1,
+                            max_tokens=1000, on_response=reports.append)
+        self.assertEqual(len(requests), 4)
+        self.assertTrue(all(request == requests[0] for request in requests))
+        self.assertEqual(len(reports), 4)
+        self.assertEqual(sleep.call_args_list, [call(5), call(15), call(30)])
+        self.assertEqual(len(logs.output), 3)
 
     def test_empty_judge_response_retries_with_larger_budgets_and_logs_usage(self):
         requests, reports = [], []
